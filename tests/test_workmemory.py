@@ -22,7 +22,7 @@ class MemoryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "WorkMemory"
+        self.root = (Path(self.temp.name) / "WorkMemory").resolve()
         self.store = wm.Store(self.root, "chat-one")
         timer = patch.object(wm, "now", return_value=CLOCK)
         timer.start()
@@ -224,7 +224,7 @@ class CliTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "WorkMemory"
+        self.root = (Path(self.temp.name) / "WorkMemory").resolve()
 
     def command(self, *args, payload=None, session="cli-chat"):
         return subprocess.run([sys.executable, str(SCRIPT), "--root", str(self.root), "--session", session, *args],
