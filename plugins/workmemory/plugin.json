@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "workmemory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Save decisions and reasoning as concise local Markdown memories; search, read, and delete them across chats.",
   "author": { "name": "ckovo" },
   "repository": "https://github.com/ckovo/WorkMemory",

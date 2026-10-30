@@ -164,12 +164,152 @@ class MemoryTests(unittest.TestCase):
                 self.store.save(payload)
         self.assertFalse(list(self.root.rglob("*.md")))
 
-    def test_broken_markers_are_error_not_empty_search(self):
+    def test_broken_markers_report_incomplete_not_empty_search(self):
         saved = self.save()
         path = Path(saved["file"])
         path.write_text(path.read_text(encoding="utf-8").replace("workmemory:end", "workmemory:broken"), encoding="utf-8")
-        with self.assertRaisesRegex(wm.MemoryError, "Broken"):
-            self.store.search("missing")
+        result = self.store.search("missing")
+        self.assertTrue(result["incomplete"])
+        self.assertIn("检索不完整", result["message"])
+        self.assertNotEqual(result["message"], "目前记忆库中没有相关信息")
+        self.assertEqual(result["warnings"][0]["file"], str(path))
+
+    def test_receipt_preserves_meaning_and_does_not_truncate(self):
+        payload = {**self.payload, "conclusion": "建议在 2026-11-03 前完成；仅限本机，不允许云端同步。\n" + "必须保留条件。" * 60,
+                   "status": "proposed", "pending": ["用户尚未确认截止日期"], "reasons": []}
+        saved = self.save(payload)
+        receipt = saved["receipt"]
+        self.assertEqual(receipt["conclusion"], payload["conclusion"])
+        self.assertEqual(receipt["status"], "建议")
+        self.assertEqual(receipt["reasons"], [])
+        self.assertEqual(receipt["pending"], payload["pending"])
+        self.assertGreater(receipt["content_characters"], 300)
+        self.assertIn(payload["conclusion"], self.store.read(saved["id"])["content"])
+        self.assertEqual(self.store.save(payload)["receipt"], receipt)
+
+    def test_builtin_aliases_find_chinese_and_english_wording(self):
+        saved = self.save({"title": "进度调整", "conclusion": "上线时间往后推一周。"})
+        for query in ("发布 延期", "release delay", "版本发布延期"):
+            with self.subTest(query=query):
+                result = self.store.search(query)
+                self.assertEqual(result["hits"][0]["id"], saved["id"])
+                self.assertIn("往后推", result["hits"][0]["matched_terms"])
+                self.assertEqual(result["hits"][0]["matched_by"], "alias")
+                self.assertFalse(result["incomplete"])
+
+    def test_exact_wording_ranks_above_alias_wording(self):
+        exact = self.save({"title": "发布延期", "conclusion": "发布延期一周。"})
+        self.save({"title": "上线推迟", "conclusion": "上线时间往后推一周。"})
+        result = self.store.search("发布 延期")
+        self.assertEqual(result["hits"][0]["id"], exact["id"])
+        self.assertEqual(result["hits"][0]["matched_by"], "literal")
+
+    def test_record_aliases_are_optional_searchable_and_deduplicated(self):
+        self.save()
+        payload = {"title": "WorkMemory", "conclusion": "使用每日文件。", "aliases": ["工作记忆系统", "个人笔记", "个人笔记"]}
+        saved = self.save(payload)
+        result = self.store.search("工作记忆系统")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["hits"][0]["id"], saved["id"])
+        self.assertEqual(result["hits"][0]["matched_by"], "alias")
+        self.assertEqual(self.store.read(saved["id"])["metadata"]["aliases"], ["工作记忆系统", "个人笔记"])
+        self.assertTrue(self.store.save(payload)["duplicate"])
+        self.assertIn("个人笔记", (self.root / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_english_alias_does_not_match_inside_another_word(self):
+        self.save({"title": "prerelease", "conclusion": "redeployment checklist"})
+        self.assertEqual(self.store.search("release")["total"], 0)
+
+    def test_broken_neighbor_does_not_hide_valid_record(self):
+        broken = self.save()
+        good = self.save({"title": "有效方案", "conclusion": "仍应能读取此记录。"})
+        path = Path(broken["file"])
+        path.write_text(path.read_text(encoding="utf-8").replace(f"workmemory:end {broken['id']}", f"workmemory:broken {broken['id']}"), encoding="utf-8")
+        original = path.read_bytes()
+        found = self.store.search("有效方案")
+        self.assertEqual(found["hits"][0]["id"], good["id"])
+        self.assertTrue(found["incomplete"])
+        self.assertEqual(found["warnings"][0]["id"], broken["id"])
+        read = self.store.read(good["id"])
+        self.assertTrue(read["incomplete"])
+        self.assertIn("仍应能读取", read["content"])
+        index = self.store.reindex()
+        self.assertTrue(index["incomplete"])
+        self.assertEqual(index["indexed"], 1)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertIn("索引不完整", (self.root / "INDEX.md").read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(wm.MemoryError, "incomplete"):
+            self.store.read(broken["id"])
+
+    def test_missing_start_marker_reports_unmanaged_record(self):
+        broken = self.save()
+        good = self.save({"title": "正常邻居", "conclusion": "保留"})
+        path = Path(broken["file"])
+        path.write_text(path.read_text(encoding="utf-8").replace(f"<!-- workmemory:start {broken['id']} -->", ""), encoding="utf-8")
+        result = self.store.search()
+        self.assertTrue(result["incomplete"])
+        self.assertEqual([item["id"] for item in result["hits"]], [good["id"]])
+
+    def test_bad_metadata_is_isolated_from_healthy_neighbors(self):
+        broken = self.save()
+        good = self.save({"title": "正常记录", "conclusion": "健康数据"})
+        path = Path(broken["file"])
+        original = path.read_text(encoding="utf-8")
+        metadata = wm.META.search(original)
+        for replacement in ("{bad json}", json.dumps({"status": []}), "null"):
+            with self.subTest(metadata=replacement):
+                path.write_text(original[:metadata.start(1)] + replacement + original[metadata.end(1):], encoding="utf-8")
+                found = self.store.search()
+                self.assertTrue(found["incomplete"])
+                self.assertEqual([item["id"] for item in found["hits"]], [good["id"]])
+
+    def test_unreadable_encoding_is_reported_without_hiding_other_days(self):
+        good = self.save()
+        invalid = self.root / "2026-10/2026-10-29.md"
+        invalid.write_bytes(b"\xff\xfe\xff")
+        result = self.store.search("保存规则")
+        self.assertTrue(result["incomplete"])
+        self.assertEqual(result["hits"][0]["id"], good["id"])
+        self.assertEqual(result["warnings"][0]["file"], str(invalid))
+        self.assertEqual(invalid.read_bytes(), b"\xff\xfe\xff")
+
+    def test_duplicate_ids_skip_all_ambiguous_copies(self):
+        duplicate = self.save()
+        good = self.save({"title": "唯一记录", "conclusion": "可以读取"})
+        records, _ = self.store.scan()
+        block = next(item["block"] for item in records if item["id"] == duplicate["id"])
+        path = Path(duplicate["file"])
+        path.write_text(path.read_text(encoding="utf-8") + "\n" + block + "\n", encoding="utf-8")
+        result = self.store.search()
+        self.assertTrue(result["incomplete"])
+        self.assertEqual([item["id"] for item in result["hits"]], [good["id"]])
+        with self.assertRaisesRegex(wm.MemoryError, "incomplete"):
+            self.store.read(duplicate["id"])
+
+    def test_writes_refuse_damaged_destination_but_allow_other_days(self):
+        saved = self.save()
+        path = Path(saved["file"])
+        path.write_text(path.read_text(encoding="utf-8").replace("workmemory:end", "workmemory:broken"), encoding="utf-8")
+        original = path.read_bytes()
+        with self.assertRaisesRegex(wm.MemoryError, "destination day"):
+            self.store.save({"title": "不应写入", "conclusion": "拒绝追加"})
+        with patch.object(wm, "now", return_value=CLOCK.replace(day=31)):
+            new = self.store.save({"title": "次日记录", "conclusion": "可以正常保存"})
+        self.assertTrue(new["saved"])
+        self.assertTrue(new["incomplete"])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_delete_healthy_neighbor_preserves_broken_block(self):
+        broken = self.save()
+        good = self.save({"title": "可删除", "conclusion": "单条删除"})
+        path = Path(broken["file"])
+        path.write_text(path.read_text(encoding="utf-8").replace(f"workmemory:end {broken['id']}", f"workmemory:broken {broken['id']}"), encoding="utf-8")
+        result = self.store.delete(good["id"], self.store.read(good["id"])["sha256"])
+        self.assertTrue(result["deleted"])
+        self.assertTrue(result["incomplete"])
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(broken["id"], text)
+        self.assertNotIn(good["id"], text)
 
     def test_out_of_root_paths_and_checkout_storage_are_rejected(self):
         with self.assertRaisesRegex(wm.MemoryError, "escapes"):
@@ -251,6 +391,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("error", json.loads(invalid.stderr))
         self.assertFalse((self.root / ".workmemory/write.lock").exists())
         self.assertNotEqual(self.command("search", "--query", "x", "--limit", "0").returncode, 0)
+
+    def test_cli_reports_receipt_and_incomplete_results_separately_from_errors(self):
+        self.command("enable")
+        saved = json.loads(self.command("save", payload={"title": "上线调整", "conclusion": "上线时间往后推。"}).stdout)
+        self.assertEqual(saved["receipt"]["conclusion"], "上线时间往后推。")
+        # Use the saved month, independent of the machine's current date.
+        bad = Path(saved["file"]).with_name(Path(saved["file"]).stem[:7] + "-01.md")
+        if bad == Path(saved["file"]):
+            bad = bad.with_name(Path(saved["file"]).stem[:7] + "-02.md")
+        bad.write_bytes(b"\xff")
+        result = self.command("search", "--query", "发布延期")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        found = json.loads(result.stdout)
+        self.assertTrue(found["incomplete"])
+        self.assertEqual(found["hits"][0]["id"], saved["id"])
+        missing = json.loads(self.command("search", "--query", "不存在的资料").stdout)
+        self.assertEqual(missing["total"], 0)
+        self.assertIn("检索不完整", missing["message"])
+        self.assertNotEqual(missing["message"], "目前记忆库中没有相关信息")
 
     def test_concurrent_saves_do_not_lose_records(self):
         self.command("enable")
