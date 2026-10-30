@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "workmemory",
+  "version": "0.1.0",
+  "description": "Save decisions and reasoning as concise local Markdown memories; search, read, and delete them across chats.",
+  "author": { "name": "ckovo" },
+  "repository": "https://github.com/ckovo/WorkMemory",
+  "keywords": ["memory", "markdown", "local", "codex"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "WorkMemory",
+        "shortDescription": "Save and recall concise local Markdown memories",
+        "longDescription": "Explicitly enable a chat, save its decisions on request, and search or delete individual local records. No database or background transcript collection.",
+        "developerName": "ckovo",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": ["Use WorkMemory to enable recording for this chat."]
+      }
+    }
+  }
+}

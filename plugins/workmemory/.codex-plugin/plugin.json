@@ -1,0 +1,14 @@
+{
+  "name": "workmemory",
+  "version": "0.1.0",
+  "description": "Explicit local Markdown memory for Codex conversations.",
+  "author": { "name": "ckovo" },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WorkMemory",
+    "shortDescription": "Save and recall concise local Markdown memories",
+    "developerName": "ckovo",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"]
+  }
+}
